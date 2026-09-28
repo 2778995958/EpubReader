@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\EpubReader.Core\EpubReader.Core.csproj" />
+    <ProjectReference Include="..\EpubReader.Rendering\EpubReader.Rendering.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <ApplicationTitle>EpubReader</ApplicationTitle>
+    <RootNamespace>EpubReader.App</RootNamespace>
+    <AssemblyName>EpubReader</AssemblyName>
+    <Product>EpubReader</Product>
+    <AssemblyTitle>EpubReader</AssemblyTitle>
+  </PropertyGroup>
+
+</Project>
