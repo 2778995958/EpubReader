@@ -7,7 +7,15 @@ public static class EpubBookLoader
 {
     public static Book Open(string path, int imageThreshold)
     {
-        var epub = VersOne.Epub.EpubReader.OpenBook(path);
+        var stream = SharedFile.ReadAll(path);
+        VersOne.Epub.EpubBookRef epub;
+        try { epub = VersOne.Epub.EpubReader.OpenBook(stream); }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+        var lifetime = new SharedFile.Holding(epub, stream);
         var language = epub.Schema.Package.Metadata.Languages.FirstOrDefault()?.Language ?? "ja";
         var font = PickFont(language);
         var progression = epub.Schema.Package.Spine.PageProgressionDirection == EpubPageProgressionDirection.RIGHT_TO_LEFT
@@ -35,7 +43,7 @@ public static class EpubBookLoader
         }
 
         if (IsImageSpine(epub))
-            return OpenImageSpine(epub, path, imageThreshold, Load, language, progression);
+            return OpenImageSpineOrDispose(epub, path, imageThreshold, Load, language, progression, lifetime);
 
         var illustrations = new List<Illustration>();
         var spine = new List<SpineItem>();
@@ -43,7 +51,7 @@ public static class EpubBookLoader
         try { readingOrder = epub.GetReadingOrder(); }
         catch { readingOrder = []; }
         if (readingOrder.Count == 0)
-            return OpenImageSpine(epub, path, imageThreshold, Load, language, progression);
+            return OpenImageSpineOrDispose(epub, path, imageThreshold, Load, language, progression, lifetime);
         var seenImages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (int i = 0; i < readingOrder.Count; i++)
         {
@@ -124,7 +132,7 @@ public static class EpubBookLoader
                 .Select(g => g.First())
                 .ToList(),
             LoadResource = Load,
-            Lifetime = epub,
+            Lifetime = lifetime,
             ImageThreshold = imageThreshold
         };
     }
@@ -238,13 +246,31 @@ public static class EpubBookLoader
         return ImageSizeReader.IsImageExtension(Path.GetExtension(href));
     }
 
+    static Book OpenImageSpineOrDispose(
+        EpubBookRef epub,
+        string path,
+        int imageThreshold,
+        Func<string, byte[]?> load,
+        string language,
+        PageProgression progression,
+        IDisposable lifetime)
+    {
+        try { return OpenImageSpine(epub, path, imageThreshold, load, language, progression, lifetime); }
+        catch
+        {
+            lifetime.Dispose();
+            throw;
+        }
+    }
+
     static Book OpenImageSpine(
         EpubBookRef epub,
         string path,
         int imageThreshold,
         Func<string, byte[]?> load,
         string language,
-        PageProgression progression)
+        PageProgression progression,
+        IDisposable lifetime)
     {
         var illustrations = new List<Illustration>();
         var spine = new List<SpineItem>();
@@ -308,7 +334,7 @@ public static class EpubBookLoader
             Toc = toc,
             Illustrations = illustrations,
             LoadResource = load,
-            Lifetime = epub,
+            Lifetime = lifetime,
             ImageThreshold = imageThreshold
         };
     }
@@ -450,6 +476,7 @@ public static class EpubBookLoader
                 case TextRun t when !string.IsNullOrWhiteSpace(t.Text):
                 case RubyInline:
                 case TateChuYoko:
+                case InlineImage:
                     return false;
             }
         }

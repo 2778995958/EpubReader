@@ -27,6 +27,51 @@ public class XhtmlAndLayoutTests
     }
 
     [Fact]
+    public void GaijiStaysInlineInSentence()
+    {
+        var glyph = PngWriter.Make(128, 128, 10, 10, 10);
+        var css = CssSubset.Parse("img.gaiji { width: 1em; height: 1em; }");
+        var html = """
+            <html class="vrtl"><body>
+            <p>神絵<img class="gaiji" src="gaiji-0001.png" alt=""/><img class="gaiji" src="gaiji-0001.png" alt=""/>っ</p>
+            </body></html>
+            """;
+        var conv = new XhtmlConverter(css, key => key.Contains("gaiji") ? glyph : null, 500, "xhtml/p-006.xhtml", 0, "Yu Mincho", []);
+        var blocks = conv.Convert(html);
+        Assert.DoesNotContain(blocks, b => b is IllustrationBlock);
+        var para = Assert.Single(blocks.OfType<ParagraphBlock>());
+        Assert.Equal(2, para.Inlines.OfType<InlineImage>().Count());
+        Assert.Contains(para.Inlines.OfType<TextRun>(), t => t.Text.Contains("神絵"));
+        Assert.Contains(para.Inlines.OfType<TextRun>(), t => t.Text.Contains("っ"));
+
+        using var m = new DummyMeasurer();
+        var pages = LayoutEngine.Layout(new Book
+        {
+            FilePath = "x",
+            Title = "t",
+            Spine =
+            [
+                new SpineItem
+                {
+                    Index = 0, Key = "c", Title = "c", Kind = SpineKind.Reflowable,
+                    Blocks = blocks
+                }
+            ]
+        }, new LayoutSettings
+        {
+            WritingMode = WritingMode.Vertical,
+            PageWidth = 600,
+            PageHeight = 800,
+            Margin = 40
+        }, m);
+        Assert.Single(pages);
+        var imgs = pages[0].Ops.OfType<DrawImageOp>().ToList();
+        Assert.Equal(2, imgs.Count);
+        Assert.True(imgs.All(i => i.Width < 80 && i.Height < 80), $"img size {imgs[0].Width}x{imgs[0].Height}");
+        Assert.True(Math.Abs(imgs[0].X - imgs[1].X) < 2f, "gaiji should share a column");
+    }
+
+    [Fact]
     public void VerticalLayoutProducesPages()
     {
         var inlines = new InlineNode[]
@@ -615,5 +660,87 @@ public class XhtmlAndLayoutTests
         var ops = pages.SelectMany(p => p.Ops).OfType<DrawTextOp>().ToList();
         Assert.DoesNotContain(ops, o => o.UprightCombine && o.Text is "His" or "I");
         Assert.Contains(ops, o => !o.UprightCombine && o.Text.Contains("birthday"));
+    }
+
+    [Fact]
+    public void KadokawaColophonPaddingDoesNotIndentBodyText()
+    {
+        var css = CssSubset.Parse("""
+            body,div,p { text-indent: 0; }
+            .p-colophon .main { padding: 2em 1em 1em 1em; }
+            .p-titlepage .author p { margin: 0.5em 0 0 0; }
+            """);
+        var body = """
+            <html class="vrtl"><body class="p-text"><div class="main">
+            <p>　食卓に並んでいるのは手料理が半分。</p>
+            <p>「うーん、おいしー♪」</p>
+            </div></body></html>
+            """;
+        var conv = new XhtmlConverter(css, _ => null, 500, "xhtml/p-001.xhtml", 0, "Yu Mincho", []);
+        var paras = conv.Convert(body).OfType<ParagraphBlock>().ToList();
+        Assert.Equal(2, paras.Count);
+        Assert.All(paras, p =>
+        {
+            Assert.True(p.PadTopEm < 0.01f, $"PadTopEm={p.PadTopEm}");
+            Assert.True(p.IndentEm < 0.01f, $"IndentEm={p.IndentEm}");
+            Assert.True(p.SpaceBeforeEm < 0.01f, $"SpaceBeforeEm={p.SpaceBeforeEm}");
+        });
+
+        var colo = """
+            <html class="vrtl"><body class="p-colophon"><div class="main">
+            <p>奥付</p>
+            </div></body></html>
+            """;
+        var coloParas = new XhtmlConverter(css, _ => null, 500, "xhtml/p-colophon.xhtml", 0, "Yu Mincho", [])
+            .Convert(colo).OfType<ParagraphBlock>().ToList();
+        Assert.True(coloParas[0].PadTopEm >= 1.9f, $"colophon PadTopEm={coloParas[0].PadTopEm}");
+    }
+
+    [Fact]
+    public void InBookTocLinksJumpToFragment()
+    {
+        var toc = """
+            <html class="vrtl"><body class="p-toc"><div class="main">
+            <p><a href="p-002.xhtml#id-a001"><span>Episode1.　コミイチ</span></a></p>
+            </div></body></html>
+            """;
+        var chap = """
+            <html class="vrtl"><body class="p-text"><div class="main">
+            <p>前文。</p>
+            <p id="id-a001">本章標題</p>
+            <p>本文が続く。</p>
+            </div></body></html>
+            """;
+        var tocBlocks = new XhtmlConverter(new CssSubset(), _ => null, 500, "item/xhtml/p-toc-001.xhtml", 0, "Yu Mincho", []).Convert(toc);
+        var chapBlocks = new XhtmlConverter(new CssSubset(), _ => null, 500, "item/xhtml/p-002.xhtml", 1, "Yu Mincho", []).Convert(chap);
+        var hrefs = tocBlocks.OfType<ParagraphBlock>().SelectMany(p => p.Inlines)
+            .Select(n => n switch
+            {
+                TextRun t => t.Href,
+                TateChuYoko t => t.Href,
+                RubyInline t => t.Href,
+                _ => null
+            })
+            .Where(h => !string.IsNullOrEmpty(h))
+            .ToList();
+        Assert.Contains("p-002.xhtml#id-a001", hrefs);
+        var title = chapBlocks.OfType<ParagraphBlock>().First(p => p.Inlines.OfType<TextRun>().Any(t => t.Text.Contains("本章標題")));
+        Assert.Equal("id-a001", title.AnchorId);
+
+        var book = new Book
+        {
+            FilePath = "x",
+            Title = "t",
+            Spine =
+            [
+                new SpineItem { Index = 0, Key = "item/xhtml/p-toc-001.xhtml", Title = "toc", Kind = SpineKind.Reflowable, Blocks = tocBlocks },
+                new SpineItem { Index = 1, Key = "item/xhtml/p-002.xhtml", Title = "ch", Kind = SpineKind.Reflowable, Blocks = chapBlocks }
+            ]
+        };
+        using var session = new ReaderSession(book);
+        session.Relayout(new DummyMeasurer());
+        Assert.True(session.GoToHref("p-002.xhtml#id-a001", "item/xhtml/p-toc-001.xhtml"));
+        Assert.Equal(1, session.Pages[session.PageIndex].SpineIndex);
+        Assert.Contains(session.Pages[session.PageIndex].Ops.OfType<DrawTextOp>(), o => o.Text.Contains("本"));
     }
 }

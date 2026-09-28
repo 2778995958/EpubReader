@@ -166,6 +166,61 @@ public sealed class ReaderSession : IDisposable
         }
     }
 
+    public bool GoToHref(string href, string fromKey)
+    {
+        href = href.Trim();
+        if (href.Length == 0 || Href.IsRemote(href)) return false;
+        var (file, frag) = Href.SplitHash(href);
+        int spine;
+        if (file.Length == 0)
+        {
+            spine = IndexOfSpine(fromKey);
+            if (spine < 0 && Pages.Count > 0)
+                spine = Pages[Math.Clamp(PageIndex, 0, Pages.Count - 1)].SpineIndex;
+            if (spine < 0) return false;
+        }
+        else
+        {
+            spine = IndexOfSpine(Href.Combine(fromKey, file));
+            if (spine < 0) spine = IndexOfSpine(file);
+            if (spine < 0) return false;
+        }
+
+        if (frag.Length > 0)
+        {
+            foreach (var p in Pages)
+            {
+                if (p.SpineIndex != spine) continue;
+                foreach (var a in p.Anchors)
+                {
+                    if (a.Id.Equals(frag, StringComparison.OrdinalIgnoreCase))
+                    {
+                        PageIndex = FindPage(spine, a.CharOffset);
+                        return true;
+                    }
+                }
+            }
+        }
+        GoToSpine(spine);
+        return true;
+    }
+
+    int IndexOfSpine(string key)
+    {
+        key = key.Replace('\\', '/');
+        var name = key.Split('/').Last();
+        for (int i = 0; i < Book.Spine.Count; i++)
+        {
+            var k = Book.Spine[i].Key.Replace('\\', '/');
+            if (k.Equals(key, StringComparison.OrdinalIgnoreCase)
+                || k.EndsWith("/" + name, StringComparison.OrdinalIgnoreCase)
+                || key.EndsWith("/" + k, StringComparison.OrdinalIgnoreCase)
+                || k.Equals(name, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+        return -1;
+    }
+
     public void GoToIllustration(Illustration ill)
     {
         for (int i = 0; i < Pages.Count; i++)

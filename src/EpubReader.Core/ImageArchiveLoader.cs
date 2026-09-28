@@ -109,42 +109,32 @@ public static class ImageArchiveLoader
     static (List<(string Name, byte[] Data, ImageSize Size)> Pages, IDisposable Lifetime) LoadArchive(string path, int threshold)
     {
         var pages = new List<(string Name, byte[] Data, ImageSize Size)>();
-        IArchive archive = OpenArchive(path);
-        try
-        {
-            var named = archive.Entries
-                .Where(e => !e.IsDirectory && !string.IsNullOrEmpty(e.Key))
-                .Select(e => (Entry: e, Name: e.Key!.Replace('\\', '/')))
-                .Where(x =>
-                    !x.Name.Contains("/__MACOSX/", StringComparison.OrdinalIgnoreCase)
-                    && !x.Name.StartsWith("__MACOSX/", StringComparison.OrdinalIgnoreCase)
-                    && !Path.GetFileName(x.Name).StartsWith('.')
-                    && ImageSizeReader.IsImageExtension(Path.GetExtension(x.Name)))
-                .OrderBy(x => x.Name, Comparer<string>.Create(NaturalSort.Compare))
-                .ToList();
+        using var fs = SharedFile.OpenRead(path);
+        using var archive = ArchiveFactory.OpenArchive(fs, new ReaderOptions());
+        var named = archive.Entries
+            .Where(e => !e.IsDirectory && !string.IsNullOrEmpty(e.Key))
+            .Select(e => (Entry: e, Name: e.Key!.Replace('\\', '/')))
+            .Where(x =>
+                !x.Name.Contains("/__MACOSX/", StringComparison.OrdinalIgnoreCase)
+                && !x.Name.StartsWith("__MACOSX/", StringComparison.OrdinalIgnoreCase)
+                && !Path.GetFileName(x.Name).StartsWith('.')
+                && ImageSizeReader.IsImageExtension(Path.GetExtension(x.Name)))
+            .OrderBy(x => x.Name, Comparer<string>.Create(NaturalSort.Compare))
+            .ToList();
 
-            foreach (var (entry, name) in named)
-            {
-                using var stream = entry.OpenEntryStream();
-                using var copy = new MemoryStream();
-                stream.CopyTo(copy);
-                var data = copy.ToArray();
-                var size = ImageSizeReader.TryRead(data);
-                if (size == null) continue;
-                if (Math.Max(size.Value.Width, size.Value.Height) < threshold) continue;
-                pages.Add((name, data, size.Value));
-            }
-        }
-        catch
+        foreach (var (entry, name) in named)
         {
-            archive.Dispose();
-            throw;
+            using var stream = entry.OpenEntryStream();
+            using var copy = new MemoryStream();
+            stream.CopyTo(copy);
+            var data = copy.ToArray();
+            var size = ImageSizeReader.TryRead(data);
+            if (size == null) continue;
+            if (Math.Max(size.Value.Width, size.Value.Height) < threshold) continue;
+            pages.Add((name, data, size.Value));
         }
-        return (pages, archive);
+        return (pages, new NopDisposable());
     }
-
-    static IArchive OpenArchive(string path) =>
-        ArchiveFactory.OpenArchive(path, new ReaderOptions());
 
     sealed class NopDisposable : IDisposable
     {

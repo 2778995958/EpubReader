@@ -14,9 +14,12 @@ public sealed class ComputedStyle
     public float MarginBeforeEm { get; set; }
     public float MarginAfterEm { get; set; }
     public float PaddingTopEm { get; set; }
+    public float PadEndEm { get; set; }
+    public float LetterSpacingEm { get; set; }
     public TextAlign Align { get; set; } = TextAlign.Start;
     public bool DisplayNone { get; set; }
     public bool PageBreakBefore { get; set; }
+    public bool PageBreakAfter { get; set; }
     public bool CombineUpright { get; set; }
     public EmphasisKind Emphasis { get; set; }
     public int HeadingLevel { get; set; }
@@ -33,7 +36,8 @@ public sealed class ComputedStyle
         Bold = Bold,
         Italic = Italic,
         Emphasis = Emphasis,
-        ColorArgb = ColorArgb
+        ColorArgb = ColorArgb,
+        LetterSpacingEm = LetterSpacingEm
     };
 }
 
@@ -74,13 +78,21 @@ public sealed class CssSubset
         return d;
     }
 
-    public ComputedStyle Apply(ComputedStyle parent, string tag, string? id, IEnumerable<string> classes, string? inlineStyle)
+    public ComputedStyle Apply(
+        ComputedStyle parent,
+        string tag,
+        string? id,
+        IEnumerable<string> classes,
+        string? inlineStyle,
+        IReadOnlyList<(string Tag, string? Id, string[] Classes)>? ancestors = null)
     {
         var s = parent.Clone();
         s.PageBreakBefore = false;
+        s.PageBreakAfter = false;
         s.CombineUpright = false;
         s.HeadingLevel = 0;
         s.PaddingTopEm = 0; // padding 不繼承，由 DOM 走訪累加
+        s.PadEndEm = 0;
         s.WidthEm = 0;
         s.HeightEm = 0;
         if (tag is "h1" or "h2" or "h3" or "h4" or "h5" or "h6")
@@ -92,12 +104,13 @@ public sealed class CssSubset
         if (tag is "strong" or "b") s.Bold = true;
 
         foreach (var cls in classes)
-            ApplyClassAlias(s, cls);
+            DenshokyoClasses.Apply(s, cls);
 
         var classList = classes as IList<string> ?? classes.ToList();
+        ancestors ??= [];
         foreach (var (sel, props) in _rules)
         {
-            if (sel.Matches(tag, id, classList, s.WritingMode ?? parent.WritingMode))
+            if (sel.Matches(tag, id, classList, s.WritingMode ?? parent.WritingMode, ancestors))
                 ApplyProps(s, parent, props);
         }
         if (!string.IsNullOrWhiteSpace(inlineStyle))
@@ -115,7 +128,7 @@ public sealed class CssSubset
         return s;
     }
 
-    static void ApplyHeadingUa(ComputedStyle s, float parentPx, int level)
+    internal static void ApplyHeadingUa(ComputedStyle s, float parentPx, int level)
     {
         s.HeadingLevel = level;
         s.Bold = true;
@@ -142,38 +155,6 @@ public sealed class CssSubset
         _ => (0.8f, 0.45f)
     };
 
-    static void ApplyClassAlias(ComputedStyle s, string cls)
-    {
-        cls = cls.ToLowerInvariant();
-        if (cls is "tcy" or "text-combine" or "maxion-tcy" or "tate-chu-yoko" or "upright")
-            s.CombineUpright = true;
-        if (cls is "em-sesame" or "sesame" or "em" or "keigakuten" or "emphasis" or "em-dot" or "em-dots")
-            s.Emphasis = cls.Contains("dot") ? EmphasisKind.Dot : EmphasisKind.Sesame;
-        if (cls is "bold" or "gfont")
-            s.Bold = true;
-        if (cls is "center")
-            s.Align = TextAlign.Center;
-        if (TryParseEmClass(cls, "font-", out var fontEm) && fontEm > 0)
-            s.FontSizePx *= fontEm;
-        if (TryParseEmClass(cls, "start-", out var startEm))
-        {
-            if (s.WritingMode == WritingMode.Horizontal)
-                s.IndentEm = startEm;
-            else
-                s.PaddingTopEm = Math.Max(s.PaddingTopEm, startEm);
-        }
-        if (s.HeadingLevel == 0)
-        {
-            if (cls is "oo-midashi" or "oomidashi" or "o-midashi" or "chapter-title" or "chaptertitle"
-                or "chap-title" or "book-title" or "main-title" or "title")
-                ApplyHeadingUa(s, s.FontSizePx, 1);
-            else if (cls is "naka-midashi" or "nakamidashi" or "midashi" or "section-title")
-                ApplyHeadingUa(s, s.FontSizePx, 2);
-            else if (cls is "ko-midashi" or "komidashi")
-                ApplyHeadingUa(s, s.FontSizePx, 3);
-        }
-    }
-
     static void ApplyProps(ComputedStyle s, ComputedStyle parent, Dictionary<string, string> props)
     {
         foreach (var (k, vRaw) in props)
@@ -197,7 +178,7 @@ public sealed class CssSubset
                     s.FontSizePx = ParseFontSize(v, parent.FontSizePx);
                     break;
                 case "font-family":
-                    s.FontFamily = v.Split(',')[0].Trim().Trim('"', '\'');
+                    s.FontFamily = DenshokyoClasses.MapFamily(v.Split(',')[0]);
                     break;
                 case "font-weight":
                     s.Bold = v is "bold" or "700" or "800" or "900" or "bolder";
@@ -206,16 +187,39 @@ public sealed class CssSubset
                     s.Italic = v.Equals("italic", StringComparison.OrdinalIgnoreCase) || v.Equals("oblique", StringComparison.OrdinalIgnoreCase);
                     break;
                 case "text-indent":
-                    s.IndentEm = ParseEm(v, parent.FontSizePx);
+                    s.IndentEm = IsInherit(v) ? parent.IndentEm : ParseEm(v, parent.FontSizePx);
+                    break;
+                case "letter-spacing":
+                    s.LetterSpacingEm = IsInherit(v) ? parent.LetterSpacingEm : ParseEm(v, parent.FontSizePx);
                     break;
                 case "padding-top":
                     s.PaddingTopEm = Math.Max(0, ParseEm(v, parent.FontSizePx));
+                    break;
+                case "padding-bottom":
+                    if ((s.WritingMode ?? parent.WritingMode) == WritingMode.Vertical)
+                        s.PadEndEm = Math.Max(s.PadEndEm, Math.Max(0, ParseEm(v, parent.FontSizePx)));
+                    else
+                        s.MarginAfterEm = ParseEm(v, parent.FontSizePx);
+                    break;
+                case "padding-left":
+                    if ((s.WritingMode ?? parent.WritingMode) != WritingMode.Vertical)
+                        s.PaddingTopEm = Math.Max(s.PaddingTopEm, Math.Max(0, ParseEm(v, parent.FontSizePx)));
+                    break;
+                case "padding-right":
+                    if ((s.WritingMode ?? parent.WritingMode) == WritingMode.Vertical)
+                        s.MarginBeforeEm = ParseEm(v, parent.FontSizePx);
+                    else
+                        s.PadEndEm = Math.Max(s.PadEndEm, Math.Max(0, ParseEm(v, parent.FontSizePx)));
                     break;
                 case "padding":
                 {
                     var pad = v.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
                     if (pad.Length >= 1)
                         s.PaddingTopEm = Math.Max(0, ParseEm(pad[0], parent.FontSizePx));
+                    if (pad.Length >= 3)
+                        s.PadEndEm = Math.Max(s.PadEndEm, Math.Max(0, ParseEm(pad[2], parent.FontSizePx)));
+                    else if (pad.Length == 1)
+                        s.PadEndEm = Math.Max(s.PadEndEm, s.PaddingTopEm);
                     break;
                 }
                 case "margin-top":
@@ -229,10 +233,21 @@ public sealed class CssSubset
                 case "margin-left":
                     if ((s.WritingMode ?? parent.WritingMode) != WritingMode.Vertical)
                         s.IndentEm = ParseEm(v, parent.FontSizePx);
+                    else
+                        s.MarginAfterEm = ParseEm(v, parent.FontSizePx);
+                    break;
+                case "margin-right":
+                    if ((s.WritingMode ?? parent.WritingMode) == WritingMode.Vertical)
+                        s.MarginBeforeEm = ParseEm(v, parent.FontSizePx);
+                    else
+                        s.PadEndEm = Math.Max(s.PadEndEm, Math.Max(0, ParseEm(v, parent.FontSizePx)));
                     break;
                 case "margin-bottom":
                 case "margin-block-end":
-                    s.MarginAfterEm = ParseEm(v, parent.FontSizePx);
+                    if ((s.WritingMode ?? parent.WritingMode) == WritingMode.Vertical)
+                        s.PadEndEm = Math.Max(s.PadEndEm, Math.Max(0, ParseEm(v, parent.FontSizePx)));
+                    else
+                        s.MarginAfterEm = ParseEm(v, parent.FontSizePx);
                     break;
                 case "margin":
                 {
@@ -254,6 +269,10 @@ public sealed class CssSubset
                 case "page-break-before":
                 case "break-before":
                     s.PageBreakBefore = v is "always" or "page" or "left" or "right";
+                    break;
+                case "page-break-after":
+                case "break-after":
+                    s.PageBreakAfter = v is "always" or "page" or "left" or "right";
                     break;
                 case "text-combine-upright":
                 case "text-combine":
@@ -297,21 +316,28 @@ public sealed class CssSubset
         {
             "xx-small" => parent * 0.6f,
             "x-small" => parent * 0.75f,
-            "small" => parent * 0.9f,
-            "large" => parent * 1.2f,
+            "small" or "smaller" => parent * 0.83f,
+            "large" or "larger" => parent * 1.2f,
             "x-large" => parent * 1.5f,
             "xx-large" => parent * 1.8f,
             _ => parent
         };
     }
 
+    static bool IsInherit(string v) =>
+        v.Equals("inherit", StringComparison.OrdinalIgnoreCase)
+        || v.Equals("unset", StringComparison.OrdinalIgnoreCase);
+
     static float ParseEm(string v, float parentPx)
     {
         v = v.Trim().ToLowerInvariant();
+        if (v is "0" or "0px" or "0em" or "normal") return 0;
         if (v.EndsWith("em") && float.TryParse(v[..^2], NumberStyles.Float, CultureInfo.InvariantCulture, out var em))
             return em;
         if (v.EndsWith("px") && float.TryParse(v[..^2], NumberStyles.Float, CultureInfo.InvariantCulture, out var px))
             return parentPx > 0 ? px / parentPx : 0;
+        if (float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var raw))
+            return raw;
         return 0;
     }
 
@@ -341,26 +367,13 @@ public sealed class CssSubset
         return name;
     }
 
-    static bool TryParseEmClass(string cls, string prefix, out float em)
-    {
-        em = 0;
-        if (!cls.StartsWith(prefix, StringComparison.Ordinal)) return false;
-        var rest = cls[prefix.Length..];
-        if (rest is "0") return true;
-        var m = Regex.Match(rest, @"^(\d+)em(\d{2})?$");
-        if (!m.Success) return false;
-        em = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
-        if (m.Groups[2].Success)
-            em += int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture) / 100f;
-        return true;
-    }
-
     sealed class Selector
     {
         public string? Tag;
         public string? Id;
         public string[] Classes = [];
         public WritingMode? Mode;
+        public Selector[] Ancestors = [];
 
         public static Selector? TryParse(string s)
         {
@@ -376,7 +389,17 @@ public sealed class CssSubset
                 if (t is ".vrtl" or "html.vrtl") mode = WritingMode.Vertical;
                 else if (t is ".hltr" or "html.hltr") mode = WritingMode.Horizontal;
             }
-            return ParseSimple(tokens[^1], mode);
+            var ancestors = new List<Selector>();
+            for (int i = 0; i < tokens.Length - 1; i++)
+            {
+                var anc = ParseSimple(tokens[i], null);
+                if (anc == null) return null;
+                ancestors.Add(anc);
+            }
+            var parsed = ParseSimple(tokens[^1], mode);
+            if (parsed == null) return null;
+            parsed.Ancestors = ancestors.ToArray();
+            return parsed;
         }
 
         static Selector? ParseSimple(string s, WritingMode? mode)
@@ -408,13 +431,40 @@ public sealed class CssSubset
             return sel;
         }
 
-        public bool Matches(string tag, string? id, IEnumerable<string> classes, WritingMode? mode)
+        public bool Matches(
+            string tag,
+            string? id,
+            IEnumerable<string> classes,
+            WritingMode? mode,
+            IReadOnlyList<(string Tag, string? Id, string[] Classes)> ancestors)
         {
             if (Mode != null)
             {
                 var current = mode ?? WritingMode.Vertical;
                 if (Mode != current) return false;
             }
+            if (!MatchesSimple(tag, id, classes)) return false;
+            int ai = 0;
+            for (int s = Ancestors.Length - 1; s >= 0; s--)
+            {
+                var need = Ancestors[s];
+                bool found = false;
+                while (ai < ancestors.Count)
+                {
+                    var a = ancestors[ai++];
+                    if (need.MatchesSimple(a.Tag, a.Id, a.Classes))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return false;
+            }
+            return true;
+        }
+
+        bool MatchesSimple(string tag, string? id, IEnumerable<string> classes)
+        {
             if (Tag != null && !Tag.Equals(tag, StringComparison.OrdinalIgnoreCase)) return false;
             if (Id != null && !Id.Equals(id, StringComparison.Ordinal)) return false;
             foreach (var need in Classes)

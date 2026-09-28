@@ -62,6 +62,7 @@ public static class LayoutEngine
         float lineThickness = 0;
 
         float lineEm = 0;
+        float currentLinePad = 0;
 
         void FlushLineAdvance()
         {
@@ -71,7 +72,7 @@ public static class LayoutEngine
                 ? Math.Max(lineEm * s.LineHeight, lineThickness + lineEm * 0.2f)
                 : lineThickness * s.LineHeight;
             cursorCross += pitch;
-            cursorMain = 0;
+            cursorMain = currentLinePad;
             lineThickness = 0;
             lineEm = 0;
         }
@@ -92,7 +93,7 @@ public static class LayoutEngine
             pages.Add(page);
             page = NewPage(pages.Count, item.Index, charOffset, item.Spread);
             cursorCross = 0;
-            cursorMain = 0;
+            cursorMain = currentLinePad;
             lineThickness = 0;
             lineEm = 0;
         }
@@ -217,19 +218,15 @@ public static class LayoutEngine
                 cursorCross += extraCross;
             }
 
+            if (!string.IsNullOrEmpty(para.AnchorId))
+                page.Anchors.Add((para.AnchorId, charOffset));
+
             float indent = para.IsHeading ? 0 : para.IndentEm * paraEm;
             float padTop = Math.Max(0, para.PadTopEm) * paraEm;
-            if (vertical)
-            {
-                // padding-top 與 text-indent 都在行頭（畫面上方）；負縮排可掛進 padding，但不能飛出頁面。
-                cursorMain = indent + padTop + lineStartPad;
-                cursorMain = Math.Max(0, cursorMain);
-            }
-            else
-            {
-                cursorMain = Math.Max(0, indent);
-                cursorCross += padTop;
-            }
+            float padEnd = Math.Max(0, para.PadEndEm) * paraEm;
+            currentLinePad = Math.Max(0, padTop + lineStartPad);
+            // padding-top 與 text-indent 都在行頭；負縮排可掛進 padding，但不能飛出頁面。
+            cursorMain = Math.Max(0, indent + currentLinePad);
 
             var atoms = Flatten(para, s, measurer);
             for (int ai = 0; ai < atoms.Count; ai++)
@@ -242,7 +239,8 @@ public static class LayoutEngine
                     continue;
                 }
 
-                float limit = vertical ? maxH : maxW;
+                float limit = (vertical ? maxH : maxW) - padEnd;
+                if (limit < paraEm) limit = paraEm;
                 bool wrap = cursorMain > 0 && cursorMain + atom.Advance > limit;
                 // 行頭禁則：句點、括號結尾跟前一字，掛在行尾（ぶら下げ）。
                 if (wrap && StartsKinsoku(AtomText(atom)))
@@ -270,6 +268,8 @@ public static class LayoutEngine
                 charOffset += atom.Chars;
             }
             FlushLineAdvance();
+            currentLinePad = 0;
+            cursorMain = 0;
             if (spaceAfter > 0)
                 cursorCross += spaceAfter;
             NewPageIfNeeded();
@@ -313,14 +313,14 @@ public static class LayoutEngine
                     if (s.WritingMode == WritingMode.Vertical)
                     {
                         list.Add(new Atom(em, em, em, em, tcy.Text.Length, em,
-                            new DrawTextOp(tcy.Text, 0, 0, em, em, style, s.WritingMode, true)));
+                            new DrawTextOp(tcy.Text, 0, 0, em, em, style, s.WritingMode, true, tcy.Href)));
                     }
                     else
                     {
                         var m = measurer.Measure(tcy.Text, style, WritingMode.Horizontal);
                         float w = Math.Max(em * 0.5f, m.Width);
                         list.Add(new Atom(w, em, w, em, tcy.Text.Length, em,
-                            new DrawTextOp(tcy.Text, 0, 0, w, em, style, s.WritingMode, false)));
+                            new DrawTextOp(tcy.Text, 0, 0, w, em, style, s.WritingMode, false, tcy.Href)));
                     }
                     break;
                 }
@@ -349,10 +349,21 @@ public static class LayoutEngine
                         h = adv;
                         cross = baseW;
                         list.Add(new Atom(w, h, adv, cross, ruby.BaseText.Length, style.FontSizePx,
-                            new DrawRubyOp(baseText, rubyText, 0, 0, baseW, h, style, s.WritingMode)));
+                            new DrawRubyOp(baseText, rubyText, 0, 0, baseW, h, style, s.WritingMode, ruby.Href)));
                         break;
                     }
-                    list.Add(new Atom(w, h, adv, cross, ruby.BaseText.Length, style.FontSizePx, new DrawRubyOp(baseText, rubyText, 0, 0, w, h, style, s.WritingMode)));
+                    list.Add(new Atom(w, h, adv, cross, ruby.BaseText.Length, style.FontSizePx, new DrawRubyOp(baseText, rubyText, 0, 0, w, h, style, s.WritingMode, ruby.Href)));
+                    break;
+                }
+                case InlineImage img:
+                {
+                    var style = Scale(img.Style, s);
+                    float em = style.FontSizePx;
+                    float w = Math.Max(0.5f, img.WidthEm) * em;
+                    float h = Math.Max(0.5f, img.HeightEm) * em;
+                    float adv = s.WritingMode == WritingMode.Vertical ? h : w;
+                    float cross = s.WritingMode == WritingMode.Vertical ? w : h;
+                    list.Add(new Atom(w, h, adv, cross, 1, em, new DrawImageOp(img.ResourceKey, 0, 0, w, h)));
                     break;
                 }
                 case TextRun run:
@@ -412,7 +423,9 @@ public static class LayoutEngine
                 adv = Math.Max(m.Advance, style.FontSizePx * 0.85f);
                 cross = Math.Max(w, style.FontSizePx);
             }
-            list.Add(new Atom(w, h, adv, cross, slice.Length, style.FontSizePx, new DrawTextOp(slice, 0, 0, w, h, style, s.WritingMode, tcy)));
+            if (!tcy && style.LetterSpacingEm != 0)
+                adv += style.LetterSpacingEm * style.FontSizePx;
+            list.Add(new Atom(w, h, adv, cross, slice.Length, style.FontSizePx, new DrawTextOp(slice, 0, 0, w, h, style, s.WritingMode, tcy, run.Href)));
             i += n;
         }
     }
@@ -423,12 +436,19 @@ public static class LayoutEngine
     static TextStyle Scale(TextStyle style, LayoutSettings s) => new()
     {
         FontSizePx = style.FontSizePx * s.FontScale,
-        FontFamily = string.IsNullOrWhiteSpace(s.FontFamily) ? style.FontFamily : s.FontFamily,
+        FontFamily = PickFamily(style.FontFamily, s.FontFamily),
         Bold = style.Bold,
         Italic = style.Italic,
         Emphasis = style.Emphasis,
-        ColorArgb = s.InkArgb
+        ColorArgb = s.InkArgb,
+        LetterSpacingEm = style.LetterSpacingEm
     };
+
+    static string PickFamily(string styleFamily, string settingsFamily)
+    {
+        if (DenshokyoClasses.IsGothic(styleFamily)) return styleFamily;
+        return string.IsNullOrWhiteSpace(settingsFamily) ? styleFamily : settingsFamily;
+    }
 
     static PageModel NewPage(int index, int spine, int offset, PageSpreadKind spread) => new()
     {

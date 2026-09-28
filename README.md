@@ -24,7 +24,3 @@ dotnet run --project src\EpubReader.App
 - `V` 直排／橫排　`P` 單／雙頁　`T` 目次　`I` 插圖　`F11` 全螢幕
 
 進度存在 `%LocalAppData%\EpubReader\state.json`。
-
-## 和舊版的差別
-
-舊 AeroEpubViewer（WinForms + CefSharp 86）已不再開發。

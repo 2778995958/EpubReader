@@ -70,8 +70,29 @@ public class FixtureEpubTests
         }
         finally
         {
-            try { if (File.Exists(path)) File.Delete(path); }
-            catch (IOException) { /* VersOne 可能仍握著檔案 */ }
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void OpeningDoesNotLockSourceFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "epubreader-nolock-" + Guid.NewGuid().ToString("N") + ".epub");
+        File.WriteAllBytes(path, BuildEpub());
+        try
+        {
+            using var book = BookLoader.Open(path, 500);
+            File.Delete(path);
+            Assert.False(File.Exists(path));
+            Assert.NotEmpty(book.Spine);
+            var key = book.Illustrations[0].ResourceKey;
+            var bytes = book.LoadResource!(key);
+            Assert.NotNull(bytes);
+            Assert.True(bytes!.Length > 100);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
         }
     }
 

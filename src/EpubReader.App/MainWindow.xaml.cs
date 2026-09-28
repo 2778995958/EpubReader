@@ -547,6 +547,11 @@ public partial class MainWindow : Window
 
     void OnPageClick(object sender, MouseButtonEventArgs e)
     {
+        if (TryFollowLink(e.GetPosition(PageImage)))
+        {
+            e.Handled = true;
+            return;
+        }
         var win = e.GetPosition(this);
         if (win.Y < ActualHeight * 0.2)
         {
@@ -559,6 +564,46 @@ public partial class MainWindow : Window
             CloseMenu();
             e.Handled = true;
         }
+    }
+
+    bool TryFollowLink(Point pagePos)
+    {
+        if (_session == null) return false;
+        var vis = _session.VisiblePageIndices();
+        if (vis.Count == 0) return false;
+        float half = _session.Settings.PageWidth / 2f;
+        bool ltr = _session.VisualLtr;
+        for (int vi = 0; vi < vis.Count; vi++)
+        {
+            float xOff = vis.Count == 1 ? 0 : ltr ? (vi == 0 ? 0 : half) : (vi == 0 ? half : 0);
+            var page = _session.Pages[vis[vi]];
+            foreach (var op in page.Ops)
+            {
+                string? href = op switch
+                {
+                    DrawTextOp t => t.Href,
+                    DrawRubyOp r => r.Href,
+                    _ => null
+                };
+                if (string.IsNullOrEmpty(href)) continue;
+                var (x, y, w, h) = op switch
+                {
+                    DrawTextOp t => (t.X, t.Y, t.Width, t.Height),
+                    DrawRubyOp r => (r.X, r.Y, r.Width, r.Height),
+                    _ => (0f, 0f, 0f, 0f)
+                };
+                const float pad = 4f;
+                if (pagePos.X < xOff + x - pad || pagePos.X > xOff + x + w + pad) continue;
+                if (pagePos.Y < y - pad || pagePos.Y > y + h + pad) continue;
+                var from = _session.Book.Spine[page.SpineIndex].Key;
+                if (_session.GoToHref(href, from))
+                {
+                    Present();
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     void Turn(bool next)

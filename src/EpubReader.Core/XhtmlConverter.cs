@@ -36,7 +36,7 @@ public sealed class XhtmlConverter
     {
         var parser = new HtmlParser();
         var doc = parser.ParseDocument(html);
-        var root = new ComputedStyle { FontFamily = _fontFamily, IndentEm = 1f };
+        var root = new ComputedStyle { FontFamily = _fontFamily, IndentEm = 0 };
         var blocks = new List<BlockNode>();
         // 從 html 走，才吃得到 html.vrtl / .hltr 的 writing-mode。
         var start = doc.DocumentElement ?? doc.Body;
@@ -45,7 +45,7 @@ public sealed class XhtmlConverter
         return blocks;
     }
 
-    void WalkBlocks(INode node, ComputedStyle parent, List<BlockNode> blocks, float extraPadTop)
+    void WalkBlocks(INode node, ComputedStyle parent, List<BlockNode> blocks, float extraPadTop, string? extraAnchor = null)
     {
         if (node is IElement el)
         {
@@ -55,10 +55,16 @@ public sealed class XhtmlConverter
             if (tag is "script" or "style" or "head" or "rp") return;
             if (style.PageBreakBefore) blocks.Add(new PageBreakBlock());
             float padTop = extraPadTop + Math.Max(0, style.PaddingTopEm);
+            var anchor = string.IsNullOrEmpty(el.Id) ? extraAnchor : el.Id;
 
             if (tag is "img" or "image")
             {
-                TryAddImage(el, blocks, style);
+                var inlineImgs = new List<InlineNode>();
+                if (TryAddInlineImage(el, style, inlineImgs))
+                    AddParagraph(blocks, inlineImgs, style, padTop, anchor);
+                else
+                    TryAddImage(el, blocks, style);
+                if (style.PageBreakAfter) blocks.Add(new PageBreakBlock());
                 return;
             }
 
@@ -72,25 +78,29 @@ public sealed class XhtmlConverter
                     var inlines = new List<InlineNode>();
                     WalkInlines(el, style, inlines, blocks);
                     if (HasVisibleInline(inlines))
-                        blocks.Add(new ParagraphBlock(inlines, 0, style.Align, true, headingLevel, style.MarginBeforeEm, style.MarginAfterEm, padTop));
+                        blocks.Add(new ParagraphBlock(inlines, 0, style.Align, true, headingLevel, style.MarginBeforeEm, style.MarginAfterEm, padTop, anchor, style.PadEndEm));
+                    if (style.PageBreakAfter) blocks.Add(new PageBreakBlock());
                     return;
                 }
 
                 if (HasBlockChild(el))
                 {
                     foreach (var child in el.ChildNodes)
-                        WalkBlocks(child, style, blocks, padTop);
+                        WalkBlocks(child, style, blocks, padTop, anchor);
+                    if (style.PageBreakAfter) blocks.Add(new PageBreakBlock());
                     return;
                 }
 
                 var pInlines = new List<InlineNode>();
                 WalkInlines(el, style, pInlines, blocks);
-                AddParagraph(blocks, pInlines, style, padTop);
+                AddParagraph(blocks, pInlines, style, padTop, anchor);
+                if (style.PageBreakAfter) blocks.Add(new PageBreakBlock());
                 return;
             }
 
             foreach (var child in el.ChildNodes)
-                WalkBlocks(child, style, blocks, padTop);
+                WalkBlocks(child, style, blocks, padTop, anchor);
+            if (style.PageBreakAfter) blocks.Add(new PageBreakBlock());
             return;
         }
 
@@ -99,11 +109,11 @@ public sealed class XhtmlConverter
             var style = parent.Clone();
             var inlines = new List<InlineNode>();
             AddText(node.TextContent, style, inlines);
-            AddParagraph(blocks, inlines, style, extraPadTop);
+            AddParagraph(blocks, inlines, style, extraPadTop, extraAnchor);
         }
     }
 
-    void WalkInlines(INode node, ComputedStyle parent, List<InlineNode> inlines, List<BlockNode> blocks)
+    void WalkInlines(INode node, ComputedStyle parent, List<InlineNode> inlines, List<BlockNode> blocks, string? href = null)
     {
         if (node is IElement el)
         {
@@ -118,34 +128,43 @@ public sealed class XhtmlConverter
             }
             if (tag is "img" or "image")
             {
+                if (TryAddInlineImage(el, style, inlines, href))
+                    return;
                 if (HasVisibleInline(inlines))
                     blocks.Add(new ParagraphBlock(inlines.ToList(), parent.IndentEm, parent.Align, false, 0));
                 inlines.Clear();
                 TryAddImage(el, blocks, style);
                 return;
             }
+            if (tag == "a")
+            {
+                var next = InternalHref(el.GetAttribute("href")) ?? href;
+                foreach (var child in el.ChildNodes)
+                    WalkInlines(child, style, inlines, blocks, next);
+                return;
+            }
             if (tag == "ruby")
             {
-                AddRuby(el, style, inlines);
+                AddRuby(el, style, inlines, href);
                 return;
             }
             if (style.CombineUpright || tag == "tcy")
             {
                 var t = NormalizeTcy(Collapse(el.TextContent));
                 if (t.Length > 0)
-                    inlines.Add(new TateChuYoko(t, style.ToTextStyle(1)));
+                    inlines.Add(new TateChuYoko(t, style.ToTextStyle(1), href));
                 return;
             }
             foreach (var child in el.ChildNodes)
-                WalkInlines(child, style, inlines, blocks);
+                WalkInlines(child, style, inlines, blocks, href);
             return;
         }
 
         if (node.NodeType == NodeType.Text && !string.IsNullOrWhiteSpace(node.TextContent))
-            AddText(node.TextContent ?? "", parent, inlines);
+            AddText(node.TextContent ?? "", parent, inlines, href);
     }
 
-    void AddRuby(IElement ruby, ComputedStyle style, List<InlineNode> inlines)
+    void AddRuby(IElement ruby, ComputedStyle style, List<InlineNode> inlines, string? href = null)
     {
         var bases = new List<string>();
         var rts = new List<string>();
@@ -172,16 +191,16 @@ public sealed class XhtmlConverter
         if (bases.Count == rts.Count && bases.Count > 1)
         {
             for (int i = 0; i < bases.Count; i++)
-                inlines.Add(new RubyInline(bases[i], rts[i], ts));
+                inlines.Add(new RubyInline(bases[i], rts[i], ts, href));
         }
         else
-            inlines.Add(new RubyInline(b, r, ts));
+            inlines.Add(new RubyInline(b, r, ts, href));
     }
 
-    static void AddParagraph(List<BlockNode> blocks, List<InlineNode> inlines, ComputedStyle style, float padTop)
+    static void AddParagraph(List<BlockNode> blocks, List<InlineNode> inlines, ComputedStyle style, float padTop, string? anchorId = null)
     {
         if (!HasVisibleInline(inlines)) return;
-        blocks.Add(new ParagraphBlock(inlines.ToList(), style.IndentEm, style.Align, false, 0, style.MarginBeforeEm, style.MarginAfterEm, padTop));
+        blocks.Add(new ParagraphBlock(inlines.ToList(), style.IndentEm, style.Align, false, 0, style.MarginBeforeEm, style.MarginAfterEm, padTop, anchorId, style.PadEndEm));
     }
 
     static bool HasVisibleInline(IReadOnlyList<InlineNode> inlines)
@@ -193,20 +212,21 @@ public sealed class XhtmlConverter
                 case TextRun t when !string.IsNullOrWhiteSpace(t.Text):
                 case RubyInline:
                 case TateChuYoko:
+                case InlineImage:
                     return true;
             }
         }
         return false;
     }
 
-    void AddText(string raw, ComputedStyle style, List<InlineNode> inlines)
+    void AddText(string raw, ComputedStyle style, List<InlineNode> inlines, string? href = null)
     {
         var text = NormalizeText(raw);
         if (string.IsNullOrWhiteSpace(text)) return;
         var ts = style.ToTextStyle(1);
         if (style.CombineUpright)
         {
-            inlines.Add(new TateChuYoko(NormalizeTcy(Collapse(text)), ts));
+            inlines.Add(new TateChuYoko(NormalizeTcy(Collapse(text)), ts, href));
             return;
         }
         int i = 0;
@@ -219,8 +239,8 @@ public sealed class XhtmlConverter
                 int n = j - i;
                 if (n is >= 1 and <= 4)
                 {
-                    if (i > 0) inlines.Add(new TextRun(text[0..i], ts));
-                    inlines.Add(new TateChuYoko(NormalizeTcy(text[i..j]), ts));
+                    if (i > 0) inlines.Add(new TextRun(text[0..i], ts, href));
+                    inlines.Add(new TateChuYoko(NormalizeTcy(text[i..j]), ts, href));
                     text = text[j..];
                     i = 0;
                     continue;
@@ -229,7 +249,13 @@ public sealed class XhtmlConverter
             i++;
         }
         if (text.Length > 0)
-            inlines.Add(new TextRun(text, ts));
+            inlines.Add(new TextRun(text, ts, href));
+    }
+
+    static string? InternalHref(string? href)
+    {
+        if (string.IsNullOrWhiteSpace(href) || Href.IsRemote(href)) return null;
+        return href.Trim();
     }
 
     static bool IsTcyDigit(char c) => c is >= '0' and <= '9' or >= '０' and <= '９';
@@ -249,6 +275,25 @@ public sealed class XhtmlConverter
             }
         }
         return changed ? new string(buf) : t;
+    }
+
+    bool TryAddInlineImage(IElement el, ComputedStyle style, List<InlineNode> inlines, string? href = null)
+    {
+        var classes = (el.GetAttribute("class") ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        bool gaiji = classes.Any(c => c.StartsWith("gaiji", StringComparison.OrdinalIgnoreCase));
+        float wEm = style.WidthEm > 0 ? style.WidthEm : (gaiji ? 1f : 0);
+        float hEm = style.HeightEm > 0 ? style.HeightEm : (gaiji ? 1f : 0);
+        if (!gaiji && (wEm <= 0 || hEm <= 0 || Math.Max(wEm, hEm) > 1.5f))
+            return false;
+        var src = el.GetAttribute("src")
+                  ?? el.GetAttribute("href")
+                  ?? el.GetAttribute("xlink:href")
+                  ?? el.GetAttribute("xlink:Href");
+        if (string.IsNullOrWhiteSpace(src) || Href.IsRemote(src)) return false;
+        var key = Href.Combine(_chapterKey, src);
+        if (_load(key) == null) return false;
+        inlines.Add(new InlineImage(key, Math.Max(0.5f, wEm), Math.Max(0.5f, hEm), style.ToTextStyle(1), href));
+        return true;
     }
 
     void TryAddImage(IElement el, List<BlockNode> blocks, ComputedStyle style)
@@ -283,7 +328,18 @@ public sealed class XhtmlConverter
     ComputedStyle StyleOf(IElement el, ComputedStyle parent)
     {
         var classes = (el.GetAttribute("class") ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return _css.Apply(parent, el.TagName.ToLowerInvariant(), el.Id, classes, el.GetAttribute("style"));
+        return _css.Apply(parent, el.TagName.ToLowerInvariant(), el.Id, classes, el.GetAttribute("style"), AncestorsOf(el));
+    }
+
+    static List<(string Tag, string? Id, string[] Classes)> AncestorsOf(IElement el)
+    {
+        var list = new List<(string, string?, string[])>();
+        for (var p = el.ParentElement; p != null; p = p.ParentElement)
+        {
+            var cls = (p.GetAttribute("class") ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            list.Add((p.TagName.ToLowerInvariant(), p.Id, cls));
+        }
+        return list;
     }
 
     static bool IsBlock(string tag) => tag is

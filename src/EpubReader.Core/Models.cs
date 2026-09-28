@@ -35,6 +35,7 @@ public sealed class TextStyle
     public bool Italic { get; init; }
     public EmphasisKind Emphasis { get; init; }
     public uint ColorArgb { get; init; } = 0xFF2A2118;
+    public float LetterSpacingEm { get; init; }
 
     public TextStyle WithSize(float size) => new()
     {
@@ -43,17 +44,20 @@ public sealed class TextStyle
         Bold = Bold,
         Italic = Italic,
         Emphasis = Emphasis,
-        ColorArgb = ColorArgb
+        ColorArgb = ColorArgb,
+        LetterSpacingEm = LetterSpacingEm
     };
 }
 
 public abstract record InlineNode;
 
-public sealed record TextRun(string Text, TextStyle Style) : InlineNode;
+public sealed record TextRun(string Text, TextStyle Style, string? Href = null) : InlineNode;
 
-public sealed record RubyInline(string BaseText, string Annotation, TextStyle Style) : InlineNode;
+public sealed record RubyInline(string BaseText, string Annotation, TextStyle Style, string? Href = null) : InlineNode;
 
-public sealed record TateChuYoko(string Text, TextStyle Style) : InlineNode;
+public sealed record TateChuYoko(string Text, TextStyle Style, string? Href = null) : InlineNode;
+
+public sealed record InlineImage(string ResourceKey, float WidthEm, float HeightEm, TextStyle Style, string? Href = null) : InlineNode;
 
 public sealed record LineBreakInline : InlineNode;
 
@@ -67,7 +71,9 @@ public sealed record ParagraphBlock(
     int HeadingLevel,
     float SpaceBeforeEm = 0,
     float SpaceAfterEm = 0,
-    float PadTopEm = 0) : BlockNode;
+    float PadTopEm = 0,
+    string? AnchorId = null,
+    float PadEndEm = 0) : BlockNode;
 
 public sealed record IllustrationBlock(
     string ResourceKey,
@@ -174,7 +180,8 @@ public sealed record DrawTextOp(
     float Height,
     TextStyle Style,
     WritingMode Mode,
-    bool UprightCombine) : DrawOp;
+    bool UprightCombine,
+    string? Href = null) : DrawOp;
 
 public sealed record DrawRubyOp(
     string BaseText,
@@ -184,7 +191,8 @@ public sealed record DrawRubyOp(
     float Width,
     float Height,
     TextStyle Style,
-    WritingMode Mode) : DrawOp;
+    WritingMode Mode,
+    string? Href = null) : DrawOp;
 
 public sealed record DrawImageOp(
     string ResourceKey,
@@ -202,6 +210,7 @@ public sealed class PageModel
     public bool IsImagePage { get; set; }
     public PageSpreadKind Spread { get; set; }
     public List<DrawOp> Ops { get; } = [];
+    public List<(string Id, int CharOffset)> Anchors { get; } = [];
 }
 
 public sealed class LayoutSettings
@@ -268,5 +277,14 @@ public static class Href
     public static bool IsRemote(string href) =>
         href.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
         || href.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-        || href.StartsWith("data:", StringComparison.OrdinalIgnoreCase);
+        || href.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+        || href.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase)
+        || href.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase);
+
+    public static (string File, string Frag) SplitHash(string href)
+    {
+        href = href.Trim();
+        int i = href.IndexOf('#');
+        return i < 0 ? (href, "") : (href[..i], href[(i + 1)..]);
+    }
 }
